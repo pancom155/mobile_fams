@@ -17,7 +17,9 @@
     "vite": "^7.3.1"
   },
   "dependencies": {
+    "@capacitor-community/sqlite": "^8.0.0",
     "@capacitor/core": "^8.0.2",
+    "@capacitor/network": "^8.0.1",
     "@quasar/extras": "^1.17.0",
     "axios": "^1.13.5",
     "quasar": "^2.18.6",

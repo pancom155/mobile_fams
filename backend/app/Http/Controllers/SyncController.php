@@ -18,7 +18,7 @@ class SyncController extends Controller
 
     /**
      * List all JSON files available for sync.
-     * 
+     *
      * @return \Illuminate\Http\JsonResponse
      */
     public function listFiles()
@@ -35,7 +35,7 @@ class SyncController extends Controller
                 if (pathinfo($file, PATHINFO_EXTENSION) === 'json') {
                     $filename = basename($file);
                     $lastModified = Storage::lastModified($file);
-                    
+
                     $fileList[] = [
                         'name' => $filename,
                         'updated_at' => date('Y-m-d H:i:s', $lastModified),
@@ -53,7 +53,7 @@ class SyncController extends Controller
 
     /**
      * Get specific JSON file content.
-     * 
+     *
      * @param string $filename
      * @return \Illuminate\Http\JsonResponse|\Illuminate\Http\Response
      */
@@ -61,7 +61,7 @@ class SyncController extends Controller
     {
         try {
             $path = $this->jsonStoragePath . '/' . $filename;
-            
+
             if (!Storage::exists($path)) {
                 return response()->json(['error' => 'File not found'], 404);
             }
@@ -78,7 +78,7 @@ class SyncController extends Controller
 
     /**
      * Store a new transaction to the JSON file.
-     * 
+     *
      * @param  \Illuminate\Http\Request  $request
      * @return \Illuminate\Http\JsonResponse
      */
@@ -92,7 +92,7 @@ class SyncController extends Controller
             ]);
 
             $path = $this->jsonStoragePath . '/transactions.json';
-            
+
             if (!Storage::exists($path)) {
                 // If file doesn't exist, start with empty array
                 $transactions = [];
@@ -133,7 +133,7 @@ class SyncController extends Controller
 
     /**
      * Store a new inventory count to the JSON file.
-     * 
+     *
      * @param  \Illuminate\Http\Request  $request
      * @return \Illuminate\Http\JsonResponse
      */
@@ -149,8 +149,8 @@ class SyncController extends Controller
                 'remarks' => 'nullable|string',
             ]);
 
-            $path = $this->jsonStoragePath . '/inventory_counts.json';
-            
+            $path = $this->jsonStoragePath . '/inventory_counts_items.json';
+
             if (!Storage::exists($path)) {
                 $counts = [];
             } else {
@@ -193,7 +193,7 @@ class SyncController extends Controller
 
     /**
      * Download all necessary data for offline use.
-     * 
+     *
      * @return \Illuminate\Http\JsonResponse
      */
     public function download()
@@ -203,10 +203,10 @@ class SyncController extends Controller
             $assets = Asset::all();
             $locations = Location::all();
             $sites = Site::all();
-            
+
             // Assuming 'transactions' table serves as 'inventory_count_sessions'
-            $transactions = Transaction::all(); 
-            
+            $transactions = Transaction::all();
+
             // 'inventory_counts' table serves as 'inventory_count_items'
             $inventoryCountItems = InventoryCount::all();
 
@@ -217,7 +217,7 @@ class SyncController extends Controller
                 'transactions' => $transactions,
                 'inventory_count_items' => $inventoryCountItems,
                 // If the frontend explicitly expects 'inventory_count_sessions', we can map transactions to it
-                'inventory_count_sessions' => $transactions, 
+                'inventory_count_sessions' => $transactions,
             ]);
         } catch (\Exception $e) {
             Log::error('Sync download error: ' . $e->getMessage());
@@ -228,7 +228,7 @@ class SyncController extends Controller
     /**
      * Upload new data created offline.
      * Expects a JSON payload with 'transactions' and their related items.
-     * 
+     *
      * @param  \Illuminate\Http\Request  $request
      * @return \Illuminate\Http\JsonResponse
      */
@@ -240,14 +240,14 @@ class SyncController extends Controller
         try {
             $data = $request->all();
             $syncedTransactions = [];
-            
+
             // Handle new transactions (sessions)
             if (isset($data['transactions']) && is_array($data['transactions'])) {
                 foreach ($data['transactions'] as $transData) {
                     // Create the transaction
                     // We assume the client sends the data required for creation
                     // We ignore 'id' if sent, letting DB auto-increment
-                    
+
                     $transaction = new Transaction();
                     $transaction->site_id = $transData['site_id'] ?? null;
                     $transaction->location_id = $transData['location_id'] ?? null;
@@ -260,11 +260,11 @@ class SyncController extends Controller
                             $this->createInventoryCount($itemData, $transaction->id);
                         }
                     }
-                    
+
                     // If items are sent separately but linked via a temporary ID, logic would be more complex.
-                    // For now, we assume nested structure or that the client handles the mapping logic 
+                    // For now, we assume nested structure or that the client handles the mapping logic
                     // (e.g. sending one request per transaction).
-                    
+
                     $syncedTransactions[] = $transaction;
                 }
             }
@@ -273,7 +273,7 @@ class SyncController extends Controller
             if (isset($data['inventory_count_items']) && is_array($data['inventory_count_items'])) {
                 foreach ($data['inventory_count_items'] as $itemData) {
                      // Note: If these items belong to a NEW transaction, they should be nested in 'transactions'.
-                     // If they belong to an EXISTING transaction (created previously online), 
+                     // If they belong to an EXISTING transaction (created previously online),
                      // 'session_id' must be valid.
                      $this->createInventoryCount($itemData, $itemData['session_id'] ?? null);
                 }
@@ -298,6 +298,7 @@ class SyncController extends Controller
         $count->actual_serial = $data['actual_serial'] ?? null;
         $count->status = $data['status'] ?? 'Match';
         $count->remarks = $data['remarks'] ?? null;
+        $count->counted_by = auth()->id();
         $count->save();
         return $count;
     }

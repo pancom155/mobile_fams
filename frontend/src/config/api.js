@@ -1,9 +1,16 @@
 import { Capacitor } from '@capacitor/core';
 
-// 10.0.2.2 is the special alias to your host loopback interface (127.0.0.1)
-// on the Android Emulator.
-const isAndroid = Capacitor.getPlatform() === 'android';
+// --- CONFIGURATION ---
+// 1. Set your computer's IP address here.
+//    - To find it, run "ipconfig" in your terminal.
+//    - It usually looks like 192.168.x.x
+// 2. Ensure your server is started with: php artisan serve --host=0.0.0.0 --port=8001
 
-export const API_BASE_URL = isAndroid 
-  ? 'http://127.0.0.1:8001' 
-  : 'http://127.0.0.1:8001';
+const HOST = '192.168.9.174'; // <-- EDIT THIS LINE
+const PORT = '8001';
+
+// No need to edit below this line
+const isAndroid = Capacitor.getPlatform() === 'android';
+export const API_BASE_URL = isAndroid ? `http://${HOST}:${PORT}` : `http://localhost:${PORT}`;
+
+console.log('Using API_BASE_URL:', API_BASE_URL);

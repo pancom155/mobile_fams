@@ -12,10 +12,7 @@
         >
           <q-tooltip>Go back</q-tooltip>
         </q-btn>
-        <q-toolbar-title class="text-weight-bold">
-          <div class="text-h6">Inventory Counts</div>
-          <div class="text-caption text-blue-grey-2">Manage your inventory transactions</div>
-        </q-toolbar-title>
+        <q-toolbar-title class="text-weight-bold">Count Sessions</q-toolbar-title>
         <q-btn 
           flat 
           round 
@@ -26,6 +23,7 @@
         >
           <q-tooltip>Create new count</q-tooltip>
         </q-btn>
+        <q-btn flat round dense icon="logout" @click="logout" />
       </q-toolbar>
     </q-header>
 
@@ -76,17 +74,28 @@
                   <div class="text-caption text-grey-6">
                     {{ filteredTransactions.length }} transaction{{ filteredTransactions.length !== 1 ? 's' : '' }} found
                   </div>
-                  <q-btn 
-                    flat 
-                    dense 
-                    no-caps 
-                    color="primary" 
-                    icon="refresh" 
-                    label="Refresh"
-                    @click="fetchTransactions"
-                    :loading="loading"
-                    size="sm"
-                  />
+                  <div class="row q-gutter-xs">
+                    <q-chip 
+                      dense 
+                      size="sm" 
+                      :color="isOnline ? 'green-1' : 'red-1'" 
+                      :text-color="isOnline ? 'green-9' : 'red-9'"
+                      :icon="isOnline ? 'cloud_done' : 'cloud_off'"
+                    >
+                      {{ isOnline ? 'Online' : 'Offline' }}
+                    </q-chip>
+                    <q-btn 
+                      flat 
+                      dense 
+                      no-caps 
+                      color="primary" 
+                      icon="refresh" 
+                      label="Refresh"
+                      @click="fetchTransactions"
+                      :loading="loading"
+                      size="sm"
+                    />
+                  </div>
                 </div>
               </q-card-section>
             </q-card>
@@ -283,6 +292,43 @@
             </q-card>
           </q-dialog>
 
+          <q-dialog v-model="showLocationAssetsDialog">
+            <q-card style="width: 700px; max-width: 95vw;">
+              <q-card-section>
+                <div class="row items-center justify-between">
+                  <div class="text-h6">{{ locationDialogTitle }}</div>
+                  <div class="row q-gutter-sm">
+                    <q-chip dense clickable :color="!showAllAssets ? 'primary' : 'grey-3'" :text-color="!showAllAssets ? 'white' : 'grey-9'" @click="showAllAssets = false">
+                      Scanned
+                    </q-chip>
+                    <q-chip dense clickable :color="showAllAssets ? 'primary' : 'grey-3'" :text-color="showAllAssets ? 'white' : 'grey-9'" @click="showAllAssets = true">
+                      All Assets
+                    </q-chip>
+                  </div>
+                </div>
+              </q-card-section>
+              <q-card-section class="q-pt-none">
+                <div v-if="loadingLocationAssets" class="text-center q-py-md">
+                  <q-spinner-gears color="primary" size="40px" />
+                </div>
+                <q-table
+                  v-else
+                  :rows="showAllAssets ? locationAssetsAll : locationAssets"
+                  :columns="locationAssetColumns"
+                  row-key="id"
+                  flat
+                  bordered
+                  dense
+                  hide-pagination
+                  :rows-per-page-options="[0]"
+                />
+              </q-card-section>
+              <q-card-actions align="right">
+                <q-btn flat label="Close" color="primary" v-close-popup />
+              </q-card-actions>
+            </q-card>
+          </q-dialog>
+
           <!-- FAB for New Transaction -->
           <q-page-sticky position="bottom-right" :offset="[18, 18]">
             <q-btn 
@@ -307,6 +353,7 @@ import { useRouter } from 'vue-router'
 import axios from 'axios'
 import { useQuasar } from 'quasar'
 import { API_BASE_URL } from '../config/api'
+import { DatabaseService } from '../services/DatabaseService'
 
 const router = useRouter()
 const $q = useQuasar()
@@ -318,6 +365,18 @@ const showActionDialog = ref(false)
 const showConfirmDelete = ref(false)
 const selectedTransaction = ref(null)
 const loading = ref(false)
+const isOnline = ref(true)
+const showLocationAssetsDialog = ref(false)
+const locationAssets = ref([])
+const locationAssetsAll = ref([])
+const loadingLocationAssets = ref(false)
+const locationDialogTitle = ref('')
+const showAllAssets = ref(false)
+const locationAssetColumns = [
+  { name: 'asset_tag', label: 'Asset ID', field: 'asset_tag', align: 'left', sortable: true },
+  { name: 'short_description', label: 'Description', field: 'short_description', align: 'left', sortable: true },
+  { name: 'status', label: 'Status', field: 'status', align: 'left', sortable: true }
+]
 
 // Computed properties
 const filteredTransactions = computed(() => {
@@ -338,66 +397,92 @@ const todayTransactions = computed(() => {
 })
 
 const activeTransactions = computed(() => {
-  // This could be enhanced with actual status from API
   return transactions.value.filter(t => {
-    const transactionDate = new Date(t.date.replace(/(\d{2})-(\d{2})-(\d{4})/, '$2/$1/$3'))
-    const diffDays = Math.floor((new Date() - transactionDate) / (1000 * 60 * 60 * 24))
-    return diffDays <= 7 // Consider transactions from last 7 days as "active"
+    try {
+      const transactionDate = new Date(t.date.replace(/(\d{2})-(\d{2})-(\d{4})/, '$2/$1/$3'))
+      const diffDays = Math.floor((new Date() - transactionDate) / (1000 * 60 * 60 * 24))
+      return diffDays <= 7
+    } catch (e) {
+      return false
+    }
   }).length
 })
 
-onMounted(() => {
+onMounted(async () => {
   fetchTransactions()
 })
 
 const fetchTransactions = async () => {
   loading.value = true
   try {
-    // Fetch data from JSON endpoints
-    const [transactionsRes, sitesRes, locationsRes] = await Promise.all([
-      axios.get(`${API_BASE_URL}/api/sync/json/transactions.json`),
-      axios.get(`${API_BASE_URL}/api/sync/json/sites.json`),
-      axios.get(`${API_BASE_URL}/api/sync/json/locations.json`)
-    ])
+    // 1. Load from local database first
+    const [localTransactions, localSites, localLocations] = await Promise.all([
+      DatabaseService.getLocalTransactions(),
+      DatabaseService.getLocalSites(),
+      DatabaseService.getLocalLocations()
+    ]);
 
     // Create maps for easy lookup
-    const sitesMap = new Map(sitesRes.data.map(s => [s.id, s.name]))
-    const locationsMap = new Map(locationsRes.data.map(l => [l.id, l.name]))
+    const sitesMap = new Map(localSites.map(s => [s.id, s.name]))
+    const locationsMap = new Map(localLocations.map(l => [l.id, l.name]))
 
     // Map transactions with site and location names
-    transactions.value = transactionsRes.data.map(t => ({
+    const mapped = localTransactions.map(t => ({
       ...t,
       site_name: sitesMap.get(t.site_id) || 'Unknown Site',
       location: locationsMap.get(t.location_id) || 'Unknown Location'
     }))
+    const seen = new Set()
+    transactions.value = mapped.filter(t => {
+      const key = t.id ? `id-${t.id}` : `local-${t.local_id}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
 
-    // Sort by date descending (optional, but good for UI)
+    // Sort by date descending
     transactions.value.sort((a, b) => new Date(b.date) - new Date(a.date))
+
+    // 2. Trigger a background sync if online
+    if (await DatabaseService.isOnline()) {
+      DatabaseService.syncAll().then(() => {
+        // Refresh UI after sync if we are still on this page
+        return Promise.all([
+          DatabaseService.getLocalTransactions(),
+          DatabaseService.getLocalSites(),
+          DatabaseService.getLocalLocations()
+        ]);
+      }).then(([freshTransactions, freshSites, freshLocations]) => {
+        const fSitesMap = new Map(freshSites.map(s => [s.id, s.name]))
+        const fLocationsMap = new Map(freshLocations.map(l => [l.id, l.name]))
+        
+        transactions.value = freshTransactions.map(t => ({
+          ...t,
+          site_name: fSitesMap.get(t.site_id) || 'Unknown Site',
+          location: fLocationsMap.get(t.location_id) || 'Unknown Location'
+        }))
+        transactions.value.sort((a, b) => new Date(b.date) - new Date(a.date))
+      }).catch(err => {
+        console.warn('Background sync failed:', err);
+      });
+    }
 
   } catch (error) {
     console.error('Error fetching transactions:', error)
-    
-    let message = 'Connection Failed'
-    let caption = 'Check server or IP configuration'
-    
-    if (error.response) {
-       caption = `Error ${error.response.status}: ${error.response.statusText}`
-    }
-
     $q.notify({
       type: 'negative',
-      message,
-      caption,
+      message: 'Failed to load data',
+      caption: 'Check local database or connection',
       timeout: 5000,
       position: 'top'
     })
-    
-    // Ensure transactions list is empty on error, no mock data
     transactions.value = []
   } finally {
     loading.value = false
   }
 }
+
+
 
 const handleBack = () => {
   // You can implement specific back logic or use router back
@@ -445,6 +530,12 @@ const handleTransactionClick = (transaction) => {
   goToAssets(transaction)
 }
 
+const logout = () => {
+  localStorage.removeItem('fams_token')
+  localStorage.removeItem('fams_user')
+  router.push('/login')
+}
+
 const openTransaction = () => {
   if (selectedTransaction.value) {
     goToAssets(selectedTransaction.value)
@@ -467,26 +558,58 @@ const confirmDelete = () => {
 const deleteTransaction = async () => {
   if (!selectedTransaction.value) return
 
+  const sessionId = selectedTransaction.value.id || `local_${selectedTransaction.value.local_id}`
+  if (selectedTransaction.value.id) {
+    try {
+      await axios.delete(`${API_BASE_URL}/api/transactions/${selectedTransaction.value.id}`)
+    } catch (error) {
+      console.warn('Remote delete failed, proceeding with local cleanup.', error?.message || error)
+    }
+  }
+
   try {
-    await axios.delete(`${API_BASE_URL}/api/transactions/${selectedTransaction.value.id}`)
-    
-    $q.notify({
-      type: 'positive',
-      message: 'Transaction deleted',
-      caption: 'Count session removed successfully',
-      position: 'top'
-    })
-    
-    fetchTransactions()
-  } catch (error) {
-    console.error('Error deleting transaction:', error)
-    
-    $q.notify({
-      type: 'negative',
-      message: 'Delete failed',
-      caption: 'Could not delete transaction. Please try again.',
-      position: 'top'
-    })
+    await DatabaseService.deleteLocalInventoryCountsBySession(sessionId)
+    await DatabaseService.deleteLocalTransactionBySessionId(sessionId)
+  } catch (e) {
+    console.error('Local delete error:', e)
+  }
+
+  $q.notify({
+    type: 'positive',
+    message: 'Transaction deleted',
+    caption: 'Count session removed successfully',
+    position: 'top'
+  })
+  
+  fetchTransactions()
+}
+
+const openLocationAssets = async (locationId, locationName) => {
+  loadingLocationAssets.value = true
+  locationAssets.value = []
+  locationAssetsAll.value = []
+  showAllAssets.value = false
+  locationDialogTitle.value = locationName || 'Location Assets'
+  try {
+    const localRows = await DatabaseService.getLocalInventoryCountsByLocation(locationId)
+    if (localRows.length > 0) {
+      locationAssets.value = localRows
+    } else if (await DatabaseService.isOnline()) {
+      const res = await axios.get(`${API_BASE_URL}/api/inventory/counts-by-location?location_id=${locationId}`)
+      locationAssets.value = Array.isArray(res.data) ? res.data : []
+    }
+    const localAssets = await DatabaseService.getLocalAssetsByLocation(locationId)
+    if (localAssets.length > 0) {
+      locationAssetsAll.value = localAssets
+    } else if (await DatabaseService.isOnline()) {
+      const res2 = await axios.get(`${API_BASE_URL}/api/assets/by-location?location_id=${locationId}`)
+      locationAssetsAll.value = Array.isArray(res2.data) ? res2.data : []
+    }
+    showLocationAssetsDialog.value = true
+  } catch (e) {
+    $q.notify({ type: 'negative', message: 'Failed to load assets for location', position: 'top' })
+  } finally {
+    loadingLocationAssets.value = false
   }
 }
 
@@ -494,7 +617,8 @@ const goToAssets = (transaction) => {
   router.push({ 
     path: '/asset-count', 
     query: { 
-      transaction_id: transaction.id,
+      session_id: transaction.id || `local_${transaction.local_id}`,
+      location_id: transaction.location_id,
       location_name: transaction.location,
       date: transaction.date
     } 

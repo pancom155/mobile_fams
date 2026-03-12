@@ -69,6 +69,7 @@ import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import axios from 'axios'
 import { API_BASE_URL } from '../config/api'
+import { DatabaseService } from '../services/DatabaseService'
 
 const router = useRouter()
 const $q = useQuasar()
@@ -96,23 +97,20 @@ const allLocations = ref([])
 
 onMounted(async () => {
   try {
-    const [sitesRes, locationsRes] = await Promise.all([
-      axios.get(`${API_BASE_URL}/api/sync/json/sites.json`),
-      axios.get(`${API_BASE_URL}/api/sync/json/locations.json`)
-    ])
-    
-    console.log('API Sites Response:', sitesRes.data)
-    if (Array.isArray(sitesRes.data)) {
-      siteOptions.value = sitesRes.data
+    // 1. Get local data first
+    const [localSites, localLocations] = await Promise.all([
+      DatabaseService.getLocalSites(),
+      DatabaseService.getLocalLocations()
+    ]);
+
+    if (localSites.length > 0) {
+      siteOptions.value = localSites;
+      allLocations.value = localLocations;
     }
-    
-    if (Array.isArray(locationsRes.data)) {
-      allLocations.value = locationsRes.data
-    }
-    
+
+    // Background sync will update local data if online
   } catch (error) {
-    console.error('Error fetching data:', error)
-    alert(`[DEBUG v6] Error fetching data: ${error.message}\nURL: ${API_BASE_URL}/api/sync/json/sites.json\nDetails: ${JSON.stringify(error.toJSON ? error.toJSON() : error)}`)
+    console.error('Error fetching data from local storage:', error)
     siteOptions.value = []
   }
 })
@@ -144,41 +142,53 @@ const save = async () => {
   }
 
   try {
-    const payload = {
-      site: site.value,
-      location: location.value,
-      date: date.value
+    const isOnline = await DatabaseService.isOnline();
+    let mysqlId = null;
+
+    if (isOnline) {
+      try {
+        const payload = {
+          site: site.value,
+          location: location.value,
+          date: date.value
+        }
+        const response = await axios.post(`${API_BASE_URL}/api/transactions`, payload)
+        if (response.data && response.data.id) {
+          mysqlId = response.data.id;
+        }
+      } catch (err) {
+        console.warn('Online save failed, falling back to local only.', err);
+      }
     }
-    
-    // Use standard endpoint which now saves to JSON
-    // Force using port 8001 to ensure we hit the new server instance
-    const response = await axios.post(`${API_BASE_URL}/api/transactions`, payload)
+
+    // Save to local SQLite
+    const localId = await DatabaseService.saveTransactionLocally(
+      site.value, 
+      location.value, 
+      date.value, 
+      mysqlId
+    );
     
     $q.notify({
       type: 'positive',
-      message: 'Transaction saved successfully',
+      message: mysqlId ? 'Saved and synced' : 'Saved locally (Offline)',
       position: 'top'
     })
     
-    // Navigate to asset counting page with the new transaction/session ID
-    // Check if response.data.id exists (it should be the new ID)
-    if (response.data && response.data.id) {
-        router.push(`/asset-count?session_id=${response.data.id}`)
-    } else {
-        // Fallback or error handling if ID is missing
-        console.warn('No ID returned from save transaction')
-        router.push('/transactions') 
-    }
+    // Navigate to asset counting page
+    // If online, we use mysqlId, if offline, we use a special local ID format
+    const sessionId = mysqlId || `local_${localId}`;
+    router.push(`/asset-count?session_id=${sessionId}&location_id=${location.value}`)
     
   } catch (error) {
     console.error('Error saving transaction:', error)
     $q.notify({
       type: 'negative',
       message: 'Error saving transaction',
-      caption: error.response ? error.response.statusText : error.message,
       position: 'top'
     })
   }
 }
+
 </script>
  

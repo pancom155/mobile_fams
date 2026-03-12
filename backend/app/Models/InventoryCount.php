@@ -9,12 +9,15 @@ class InventoryCount extends Model
 {
     use HasFactory;
 
+    protected $table = 'inventory_counts';
+
     protected $fillable = [
         'session_id',
         'asset_id',
         'actual_asset_id',
         'actual_serial',
         'status',
-        'remarks'
+        'remarks',
+        'counted_by'
     ];
 }

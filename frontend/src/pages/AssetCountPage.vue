@@ -20,6 +20,9 @@
           <q-btn round dense flat icon="refresh" @click="refreshData">
             <q-tooltip>Refresh</q-tooltip>
           </q-btn>
+          <q-btn round dense flat icon="save" @click="saveSession" :loading="savingSession">
+            <q-tooltip>Save Count</q-tooltip>
+          </q-btn>
         </div>
       </q-toolbar>
     </q-header>
@@ -38,6 +41,7 @@
               bg-color="white" 
               class="q-mb-xs shadow-2"
               @keyup.enter="scanAsset"
+              @keydown="onScannerKeydown"
               autofocus
               :loading="scanning"
             >
@@ -93,7 +97,17 @@
                   </div>
                 </div>
 
-                <div v-if="scanStatus === 'Found'" class="row justify-end q-mt-md">
+                <div class="q-mt-md">
+                  <q-input
+                    outlined
+                    v-model="remarks"
+                    placeholder="Remarks (optional)"
+                    dense
+                    bg-color="white"
+                  />
+                </div>
+
+                <div v-if="scanStatus === 'Found' || scanStatus === 'Missed Location'" class="row justify-end q-mt-md">
                   <q-btn 
                     color="primary" 
                     label="Add to Count" 
@@ -119,8 +133,22 @@
             
             <q-card class="col-grow bg-white shadow-2">
               <q-card-section class="text-center">
-                <div class="text-h5 text-weight-bold text-green">{{ uniqueAssetsCount }}</div>
-                <div class="text-caption text-grey-7">Unique Assets</div>
+                <div class="text-h5 text-weight-bold text-blue">{{ totalAssetsInLocation }}</div>
+                <div class="text-caption text-grey-7">Total Assets in Location</div>
+              </q-card-section>
+            </q-card>
+            
+            <q-card class="col-grow bg-white shadow-2">
+              <q-card-section class="text-center">
+                <div class="text-h5 text-weight-bold text-orange">{{ notScannedCount }}</div>
+                <div class="text-caption text-grey-7">Not Scanned</div>
+              </q-card-section>
+            </q-card>
+            
+            <q-card class="col-grow bg-white shadow-2">
+              <q-card-section class="text-center">
+                <div class="text-h5 text-weight-bold text-orange-9">{{ missedLocationCount }}</div>
+                <div class="text-caption text-grey-7">Missed Location</div>
               </q-card-section>
             </q-card>
           </div>
@@ -128,9 +156,16 @@
           <!-- Assets Table -->
           <q-card class="shadow-2">
             <q-card-section>
-              <div class="text-subtitle1 text-weight-bold q-mb-md">Scanned Assets</div>
+              <div class="row items-center justify-between q-mb-md">
+                <div class="text-subtitle1 text-weight-bold">Scanned Assets</div>
+                <div class="row q-gutter-sm">
+                  <q-chip dense clickable :color="statusFilter === 'all' ? 'primary' : 'grey-3'" :text-color="statusFilter === 'all' ? 'white' : 'grey-9'" @click="statusFilter = 'all'">All</q-chip>
+                  <q-chip dense clickable :color="statusFilter === 'match' ? 'green' : 'grey-3'" :text-color="statusFilter === 'match' ? 'white' : 'grey-9'" @click="statusFilter = 'match'">Match</q-chip>
+                  <q-chip dense clickable :color="statusFilter === 'missed' ? 'orange' : 'grey-3'" :text-color="statusFilter === 'missed' ? 'white' : 'grey-9'" @click="statusFilter = 'missed'">Missed</q-chip>
+                </div>
+              </div>
               <q-table
-                :rows="assets"
+                :rows="filteredAssets"
                 :columns="columns"
                 row-key="id"
                 flat
@@ -146,6 +181,9 @@
                       <div v-if="col.name === 'description'" class="ellipsis" style="max-width: 200px;">
                         {{ col.value }}
                       </div>
+                      <q-chip v-else-if="col.name === 'status'" :color="props.row.status === 'Missed Location' ? 'orange' : (props.row.status === 'Match' ? 'green' : 'grey-6')" text-color="white" size="sm">
+                        {{ col.value }}
+                      </q-chip>
                       <span v-else>{{ col.value }}</span>
                     </q-td>
                     <q-td auto-width>
@@ -168,6 +206,30 @@
                   <div class="full-width row flex-center text-grey-6 q-py-xl">
                     <q-icon name="inventory_2" size="48px" class="q-mb-sm" />
                     <div class="text-subtitle1 q-ml-sm">No assets scanned yet</div>
+                  </div>
+                </template>
+              </q-table>
+            </q-card-section>
+          </q-card>
+
+          <!-- Not Scanned List -->
+          <q-card class="shadow-2 q-mt-md">
+            <q-card-section>
+              <div class="text-subtitle1 text-weight-bold q-mb-md">Not Scanned Assets</div>
+              <q-table
+                :rows="notScannedAssets"
+                :columns="columns"
+                row-key="id"
+                flat
+                bordered
+                dense
+                hide-pagination
+                :rows-per-page-options="[0]"
+              >
+                <template v-slot:no-data>
+                  <div class="full-width row flex-center text-grey-6 q-py-xl">
+                    <q-icon name="check_circle" size="40px" class="q-mb-sm" color="green" />
+                    <div class="text-subtitle1 q-ml-sm">All assets scanned</div>
                   </div>
                 </template>
               </q-table>
@@ -263,11 +325,12 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import axios from 'axios'
 import { useQuasar } from 'quasar'
 import { API_BASE_URL } from '../config/api'
+import { DatabaseService } from '../services/DatabaseService'
 
 const route = useRoute()
 const $q = useQuasar()
@@ -275,14 +338,23 @@ const barcode = ref('')
 const scannedAsset = ref(null)
 const scanStatus = ref('')
 const scanStatusColor = ref('grey')
+const remarks = ref('')
 const showConfirmDelete = ref(false)
 const showInstructions = ref(false)
 const selectedAsset = ref(null)
 const scanning = ref(false)
 const saving = ref(false)
+const savingSession = ref(false)
+const assets = ref([])
+const localCountsCache = ref([])
+let scanTimer = null
+const shouldClearOnNextInput = ref(false)
+const locationAssetsAll = ref([])
+const statusFilter = ref('all')
 
-const sessionId = computed(() => route.query.transaction_id)
-const locationName = computed(() => route.query.location_name || 'Unknown Location')
+const sessionId = computed(() => route.query.session_id)
+const currentLocationId = ref(route.query.location_id || null)
+const locationName = computed(() => route.query.location_name || 'Count Session')
 
 const columns = [
   { 
@@ -298,192 +370,259 @@ const columns = [
     label: 'Description', 
     field: 'short_description', 
     align: 'left',
-    headerClasses: 'text-weight-bold'
-  },
-  { 
-    name: 'brand', 
-    label: 'Brand', 
-    field: 'brand', 
-    align: 'left',
-    headerClasses: 'text-weight-bold'
-  },
-  { 
-    name: 'serial', 
-    label: 'Serial', 
-    field: 'serial_number', 
-    align: 'left',
-    headerClasses: 'text-weight-bold'
+    sortable: true
   },
   {
-    name: 'actions',
-    label: '',
-    field: '',
-    align: 'right',
+    name: 'status',
+    label: 'Status',
+    field: 'status',
+    align: 'left',
+    sortable: true
+  },
+  {
+    name: 'remarks',
+    label: 'Remarks',
+    field: 'remarks',
+    align: 'left',
     sortable: false
   }
 ]
 
-const assets = ref([])
-const allAssets = ref([]) // To store full asset list for lookup
-
-const uniqueAssetsCount = computed(() => {
-  const unique = new Set(assets.value.map(a => a.asset_id))
-  return unique.size
+const totalAssetsInLocation = computed(() => locationAssetsAll.value.length)
+const notScannedAssets = computed(() => {
+  const scannedSet = new Set(assets.value.map(a => a.asset_id))
+  return locationAssetsAll.value.filter(a => !scannedSet.has(a.asset_id))
+})
+const notScannedCount = computed(() => notScannedAssets.value.length)
+const missedLocationCount = computed(() => assets.value.filter(a => a.status === 'Missed Location').length)
+const filteredAssets = computed(() => {
+  if (statusFilter.value === 'match') {
+    return assets.value.filter(a => a.status === 'Match')
+  }
+  if (statusFilter.value === 'missed') {
+    return assets.value.filter(a => a.status === 'Missed Location')
+  }
+  return assets.value
 })
 
 const scanStatusColorClass = computed(() => {
-  return scanStatus.value === 'Found' ? 'border-left-green' : 'border-left-red'
+  if (scanStatus.value === 'Found') return 'bg-green-1 border-green'
+  if (scanStatus.value === 'Not Found') return 'bg-red-1 border-red'
+  return ''
 })
 
 onMounted(async () => {
-  console.log('AssetCountPage mounted', sessionId.value)
-  if (!sessionId.value) {
-    $q.notify({ 
-      type: 'negative', 
-      message: 'No Transaction Selected',
-      position: 'top'
-    })
-    return
+  if (!currentLocationId.value) {
+    const tx = await DatabaseService.getTransactionBySessionId(sessionId.value);
+    currentLocationId.value = tx?.location_id || null;
   }
-  
-  await refreshData()
+  await fetchAssets()
 })
 
-const refreshData = async () => {
+const fetchAssets = async () => {
   try {
-    // Fetch both inventory counts and full asset list
-    const [countsRes, assetsRes] = await Promise.all([
-        axios.get(`${API_BASE_URL}/api/sync/json/inventory_counts.json`),
-        axios.get(`${API_BASE_URL}/api/sync/json/assets.json`)
-    ])
+    // 1. Load local counts for this session first
+    const localCounts = await DatabaseService.getLocalInventoryCounts(sessionId.value);
+    localCountsCache.value = localCounts;
     
-    // Store all assets for lookup
-    allAssets.value = assetsRes.data
+    // We need asset details for the UI, let's look them up
+    const enrichedAssets = [];
+    for (const count of localCounts) {
+      let assetDetails = await DatabaseService.lookupLocalAsset(count.actual_asset_id);
+      if (assetDetails.length === 0 && (await DatabaseService.isOnline())) {
+        try {
+          const res = await axios.get(`${API_BASE_URL}/api/assets/lookup?barcode=${count.actual_asset_id}`);
+          const fromServer = Array.isArray(res.data) ? res.data : (res.data ? [res.data] : []);
+          if (fromServer.length > 0) {
+            assetDetails = fromServer;
+          }
+        } catch (e) {}
+      }
+      if (assetDetails.length > 0) {
+        enrichedAssets.push({
+          ...assetDetails[0],
+          local_count_id: count.local_id,
+          sync_status: count.sync_status,
+          inventory_count_id: count.id || null,
+          status: count.status,
+          remarks: count.remarks || ''
+        });
+      }
+    }
+    assets.value = enrichedAssets;
 
-    // Filter counts for current session
-    // Note: sessionId.value comes from route query, check if type matches (string vs number)
-    const currentCounts = countsRes.data.filter(item => item.session_id == sessionId.value)
-    
-    assets.value = currentCounts.map(item => {
-        // Find asset details from allAssets
-        const assetDetail = allAssets.value.find(a => a.id === item.asset_id)
-        return {
-            id: item.asset_id,
-            inventory_count_id: item.id,
-            asset_id: assetDetail ? assetDetail.asset_id : 'Unknown', // The tag/barcode
-            short_description: assetDetail ? assetDetail.short_description : 'Unknown',
-            brand: assetDetail ? assetDetail.brand : '',
-            serial_number: assetDetail ? assetDetail.serial_number : ''
-        }
-    })
-  } catch (error) {
-    console.error('Error fetching inventory counts:', error)
-    $q.notify({ 
-      type: 'negative', 
-      message: 'Failed to load inventory data',
-      position: 'top'
-    })
+    // 2. Load all assets for the current location (expected list)
+    if (currentLocationId.value) {
+      const localAll = await DatabaseService.getLocalAssetsByLocation(Number(currentLocationId.value));
+      if (localAll.length > 0) {
+        locationAssetsAll.value = localAll;
+      } else if (await DatabaseService.isOnline()) {
+        const res = await axios.get(`${API_BASE_URL}/api/assets/by-location?location_id=${currentLocationId.value}`);
+        locationAssetsAll.value = Array.isArray(res.data) ? res.data : [];
+      }
+    }
+
+    // 2. Background sync handles server merge
+  } catch (err) {
+    console.error('Error fetching assets:', err);
+  }
+}
+
+const saveSession = async () => {
+  savingSession.value = true
+  try {
+    const online = await DatabaseService.isOnline()
+    if (online) {
+      await DatabaseService.syncAll()
+      $q.notify({ type: 'positive', message: 'Count saved and synced', position: 'top' })
+    } else {
+      $q.notify({ type: 'warning', message: 'Saved locally (offline)', position: 'top' })
+    }
+    await fetchAssets()
+  } catch (e) {
+    console.error('Save session error:', e)
+    $q.notify({ type: 'negative', message: 'Failed to save count', position: 'top' })
+  } finally {
+    savingSession.value = false
   }
 }
 
 const scanAsset = async () => {
-  if (!barcode.value.trim()) {
-    $q.notify({ 
-      type: 'warning', 
-      message: 'Please enter a barcode',
-      position: 'top'
-    })
-    return
-  }
+  if (!barcode.value) return
   
   scanning.value = true
+  scannedAsset.value = null
+  scanStatus.value = ''
+  
   try {
-    // Local lookup using allAssets
-    const searchTerm = barcode.value.trim()
-    const foundAssets = allAssets.value.filter(a => 
-        a.asset_id === searchTerm || 
-        a.serial_number === searchTerm
-    )
+    const isDuplicate = assets.value.some(a => a.asset_id === barcode.value || a.serial_number === barcode.value)
+    if (isDuplicate) {
+      const existing = assets.value.find(a => a.asset_id === barcode.value || a.serial_number === barcode.value)
+      scannedAsset.value = existing || null
+      scanStatus.value = 'Already Scanned'
+      scanStatusColor.value = 'blue'
+      return
+    }
+    // 1. Try local lookup first
+    const localResults = await DatabaseService.lookupLocalAsset(barcode.value);
     
-    if (foundAssets.length > 0) {
-      const asset = foundAssets[0]
-      scannedAsset.value = asset
-      scanStatus.value = 'Found'
-      scanStatusColor.value = 'positive'
-      
-      // Check if already scanned
-      if (assets.value.some(a => a.id === asset.id)) { // Check by ID (FK)
-        $q.notify({ 
-          type: 'info', 
-          message: 'Asset already in count list',
-          icon: 'info',
-          position: 'top'
-        })
+    if (localResults.length > 0) {
+      scannedAsset.value = localResults[0];
+      if (currentLocationId.value && scannedAsset.value.location_id && Number(scannedAsset.value.location_id) !== Number(currentLocationId.value)) {
+        scanStatus.value = 'Missed Location';
+        scanStatusColor.value = 'orange';
+      } else {
+        scanStatus.value = 'Found';
+        scanStatusColor.value = 'green';
+      }
+    } else if (await DatabaseService.isOnline()) {
+      // 2. If not found locally and online, try server
+      const res = await axios.get(`${API_BASE_URL}/api/assets/lookup?barcode=${barcode.value}`);
+      if (res.data) {
+        scannedAsset.value = Array.isArray(res.data) ? res.data[0] : res.data;
+        if (currentLocationId.value && scannedAsset.value.location_id && Number(scannedAsset.value.location_id) !== Number(currentLocationId.value)) {
+          scanStatus.value = 'Missed Location';
+          scanStatusColor.value = 'orange';
+        } else {
+          scanStatus.value = 'Found';
+          scanStatusColor.value = 'green';
+        }
+      } else {
+        scanStatus.value = 'Not Found';
+        scanStatusColor.value = 'red';
       }
     } else {
-      scannedAsset.value = null
-      scanStatus.value = 'Not Found'
-      scanStatusColor.value = 'negative'
-      $q.notify({ 
-        type: 'warning', 
-        message: 'Asset not found in database',
-        position: 'top'
-      })
+      scanStatus.value = 'Not Found';
+      scanStatusColor.value = 'red';
     }
   } catch (error) {
-    console.error('Scan Error:', error)
-    $q.notify({ 
-      type: 'negative', 
-      message: 'Error scanning asset',
-      position: 'top'
-    })
+    console.error('Scan error:', error)
+    scanStatus.value = 'Error'
+    scanStatusColor.value = 'orange'
   } finally {
     scanning.value = false
-    barcode.value = ''
+    focusScanner()
+    shouldClearOnNextInput.value = true
   }
 }
 
 const saveScannedAsset = async () => {
   if (!scannedAsset.value) return
+  if (assets.value.some(a => a.asset_id === scannedAsset.value.asset_id || a.serial_number === scannedAsset.value.serial_number)) {
+    $q.notify({ type: 'warning', message: 'Already scanned', position: 'top' })
+    return
+  }
   
   saving.value = true
-  const asset = scannedAsset.value
-  
   try {
-    const response = await axios.post(`${API_BASE_URL}/api/inventory/count`, {
-      session_id: sessionId.value, 
-      asset_id: asset.id,
-      actual_asset_id: asset.asset_id,
-      actual_serial: asset.serial_number,
-      status: 'Match', 
-      remarks: 'Scanned via Mobile App'
-    })
+    const isOnline = await DatabaseService.isOnline();
+    const isLocalSession = sessionId.value.startsWith('local_');
+    let mysqlId = null;
 
-    assets.value.unshift({
-      ...asset,
-      inventory_count_id: response.data.id
+    const countData = {
+      session_id: sessionId.value,
+      asset_id: scannedAsset.value.id,
+      actual_asset_id: scannedAsset.value.asset_id,
+      actual_serial: scannedAsset.value.serial_number,
+      status: scanStatus.value === 'Missed Location' ? 'Missed Location' : 'Match',
+      remarks: remarks.value || ''
+    };
+
+    if (isOnline && !isLocalSession) {
+      try {
+        const res = await axios.post(`${API_BASE_URL}/api/inventory/count`, countData);
+        if (res.data && res.data.id) {
+          mysqlId = res.data.id;
+        }
+      } catch (err) {
+        console.warn('Online count save failed, using local only.', err);
+      }
+    }
+
+    // Save locally
+    await DatabaseService.saveInventoryCountLocally(countData, mysqlId);
+    
+    $q.notify({
+      type: 'positive',
+      message: mysqlId ? 'Asset added and synced' : 'Asset added locally',
+      position: 'top',
+      timeout: 1000
     })
     
-    $q.notify({ 
-      type: 'positive', 
-      message: 'Asset added to count',
-      icon: 'check_circle',
-      position: 'top'
-    })
-    
-    // Clear scanned asset
-    scannedAsset.value = null
-    scanStatus.value = ''
+    await fetchAssets();
+    barcode.value = '';
+    scannedAsset.value = null;
+    scanStatus.value = '';
+    remarks.value = '';
     
   } catch (error) {
-    console.error('Save Error:', error)
-    $q.notify({ 
-      type: 'negative', 
-      message: 'Error saving asset',
+    console.error('Save error:', error)
+    $q.notify({
+      type: 'negative',
+      message: 'Failed to save asset',
       position: 'top'
     })
   } finally {
     saving.value = false
+  }
+}
+
+watch(barcode, (val) => {
+  if (!val) return
+  if (scanTimer) {
+    clearTimeout(scanTimer)
+  }
+  scanTimer = setTimeout(() => {
+    if (!scanning.value) {
+      scanAsset()
+    }
+  }, 200)
+})
+
+const onScannerKeydown = () => {
+  if (shouldClearOnNextInput.value) {
+    barcode.value = ''
+    shouldClearOnNextInput.value = false
   }
 }
 
@@ -498,17 +637,27 @@ const confirmDelete = (row) => {
 }
 
 const deleteAsset = async () => {
-  if (!selectedAsset.value || !selectedAsset.value.inventory_count_id) return
+  if (!selectedAsset.value) return
 
   try {
-    await axios.delete(`${API_BASE_URL}/api/inventory/count/${selectedAsset.value.inventory_count_id}`)
+    const isOnline = await DatabaseService.isOnline();
+    const isLocalSession = sessionId.value.startsWith('local_');
+    const mysqlId = selectedAsset.value.inventory_count_id;
+
+    if (isOnline && !isLocalSession && mysqlId) {
+      await axios.delete(`${API_BASE_URL}/api/inventory/count/${mysqlId}`)
+    }
+
+    // Local deletion
+    if (selectedAsset.value.local_count_id) {
+      await DatabaseService.deleteLocalInventoryCount(selectedAsset.value.local_count_id);
+    }
     
-    assets.value = assets.value.filter(a => a.inventory_count_id !== selectedAsset.value.inventory_count_id)
+    assets.value = assets.value.filter(a => a.local_count_id !== selectedAsset.value.local_count_id)
     
     $q.notify({ 
       type: 'positive', 
       message: 'Asset removed from count',
-      icon: 'delete',
       position: 'top'
     })
   } catch (error) {
@@ -518,6 +667,8 @@ const deleteAsset = async () => {
       message: 'Error deleting asset',
       position: 'top'
     })
+  } finally {
+    showConfirmDelete.value = false
   }
 }
 
